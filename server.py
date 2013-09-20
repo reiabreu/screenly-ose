@@ -213,8 +213,8 @@ def api(view):
 @api
 def add_asset():
     asset = prepare_asset(request)
-    if url_fails(asset['uri']):
-        raise Exception("Could not retrieve file. Check the asset URL.")
+    #if url_fails(asset['uri']):
+       # raise Exception("Could not retrieve file. Check the asset URL.")
     return assets_helper.create(db_conn, asset)
 
 

@@ -33,6 +33,9 @@ last_settings_refresh = None
 load_screen_pid = None
 is_pro_init = None
 current_browser_url = None
+pid_to_kill= None
+proxy="INSERT_YOUR_PROXY_HERE"
+no_proxy="INSERT_YOUR_PROXY_EXCEPTION_HERE"
 
 # Detect the architecture and load the proper video player
 arch = machine()
@@ -190,7 +193,7 @@ def asset_is_accessible(uri):
 def load_browser():
     logging.info('Loading browser...')
 
-    global is_pro_init, current_browser_url
+    global is_pro_init, current_browser_url,pid_to_kill
     is_pro_init = get_is_pro_init()
     if not is_pro_init:
         logging.debug('Detected Pro initiation cycle.')
@@ -208,7 +211,7 @@ def load_browser():
     else:
         browser_load_url = black_page
 
-    browser = sh.Command('uzbl-browser')(uri=browser_load_url, _bg=True)
+    browser = sh.Command('chromium-browser')(browser_load_url,disable_restore_background_contents=True,disable_restore_session_state=False,kiosk=True,_bg=True)
     current_browser_url = browser_load_url
 
     logging.info('Browser loaded. Running as PID %d.' % browser.pid)
@@ -220,6 +223,8 @@ def load_browser():
         # Give browser some time to start (we have seen multiple uzbl running without this)
         sleep(10)
 
+    pid_to_kill=browser.pid
+    logging.info('Done')
     return browser
 
 
@@ -301,21 +306,13 @@ def browser_clear():
 
 
 def browser_url(url):
-    try: browser_page_has('life')
-    except sh.ErrorReturnCode_1 as e:
-        logging.exception('browser socket dead, restarting browser')
-        global fifo, browser_pid
-        browser_pid = load_browser().pid
-        fifo = get_fifo()
-        disable_browser_status()
 
     global current_browser_url
 
-    if url == current_browser_url:
-        logging.debug("Already showing %s, keeping it." % url)
-        return
-    browser_fifo('set uri = %s' % url)
+    browser=sh.Command('chromium-browser')(url,disable_restore_background_contents=True,
+    disable_restore_session_state=True,kiosk=True,proxy_server=proxy,no_proxy=no_proxy,_bg=True)
     current_browser_url = url
+    return browser
 
 
 def disable_browser_status():
@@ -330,7 +327,7 @@ def view_image(uri, duration):
         run = sh.feh(uri, scale_down=True, borderless=True, fullscreen=True, cycle_once=True, slideshow_delay=duration, _bg=True)
         # Wait until feh is starting before clearing the browser. This minimises delay between
         # web and image content.
-        browser_clear()
+        #browser_clear()
         run.wait()
     else:
         logging.debug('Received non-200 status (or file not found if local) from %s. Skipping.' % (uri))
@@ -351,7 +348,7 @@ def view_video(uri):
         # Wait until omxplayer is starting before clearing the browser. This minimises delay between
         # web and image content. Omxplayer will run on top of the browser so the delay in clearing
         # won't be visible. This minimises delay between web and video.
-        browser_clear()
+        #browser_clear()
         run.wait()
 
         if run.exit_code != 0:
@@ -380,15 +377,22 @@ def view_video(uri):
 
 
 def view_web(url, duration):
-    if asset_is_accessible(url):
-        logging.debug('Web content appears to be available. Proceeding.')
-        logging.debug('Displaying url %s for %s seconds.' % (url, duration))
+	global pid_to_kill
+	logging.debug("Current URL is %s" % current_browser_url)
+	logging.debug("About to display URL %s" % url)
+	logging.debug("Browser's current PID is %s" % pid_to_kill)
+	if url != current_browser_url:
+	    if pid_to_kill is not None:
+			logging.info('Terminating process with PID %d ' % pid_to_kill) 
+			kill(pid_to_kill, signal.SIGTERM)
 
-        browser_url(url)
-
+	    logging.debug('Displaying url %s for %s seconds.' % (url, duration))
+	    pid_to_kill=browser_url(url).pid
+	    logging.debug('New browser PID is %s' % pid_to_kill)	
+	else:
+	    logging.debug("Already showing %s, keeping it." % url)
+        
         sleep(int(duration))
-    else:
-        logging.debug('Received non-200 status (or file not found if local) from %s. Skipping.' % (url))
 
 
 def toggle_load_screen(status=True):
@@ -497,51 +501,10 @@ if __name__ == "__main__":
     # Set up HTML templates
     black_page = html_templates.black_page()
 
-    # Fire up the browser
-    run_browser = load_browser()
-
-    logging.debug('Getting browser PID.')
-    browser_pid = run_browser.pid
-
-    logging.debug('Getting FIFO.')
-    fifo = get_fifo()
-
-    logging.debug('Disable the browser status bar.')
-    disable_browser_status()
-
-    if not settings['verify_ssl']:
-       browser_fifo('set ssl_verify = 0')
-
-    # Disable load screen early if initialization mode
-    if not is_pro_init:
-        toggle_load_screen(False)
 
     # Wait until initialized (Pro only).
     did_show_pin = False
     did_show_claimed = False
-    while not get_is_pro_init():
-        # Wait for the status page to fully load.
-        while not browser_page_has("showPin"):
-            logging.debug("Waiting for intro page to load...")
-            sleep(1)
-
-        with open(path.join(settings.get_configdir(), 'setup_status.json'), 'rb') as status_file:
-            status = json.load(status_file)
-
-        if not did_show_pin and not did_show_claimed and status.get('pin'):
-            browser_fifo('''js showPin("%s")''' % status.get('pin').replace('"', '\\"'))
-            did_show_pin = True
-
-        if not did_show_claimed and status.get('claimed'):
-            browser_fifo('''js showUpdating()''')
-            did_show_claimed = True
-
-        logging.debug('Waiting for node to be initialized.')
-        sleep(1)
-
-    # Bring up the blank page (in case there are only videos).
-    logging.debug('Loading blank page.')
-    view_web(black_page, 1)
 
     scheduler = Scheduler()
 
